@@ -1,0 +1,1065 @@
+---
+title: "Analisis Sales Marketplace Kopi Sachet"
+output: 
+  rmdformats::readthedown:
+      toc_float: 
+          collapsed: true
+      number_sections: false
+      highlight: default
+      css: custom.css
+---
+
+# Pendahuluan
+
+Pada riset kali ini dilakukan scraping pengambilan hasil penjualan Produk Kopi Sachet di platform eCommerce Tokopedia dan Shopee untuk eksplorasi Sales performance dari Merk Merk tersebut
+
+## Tujuan
+
+1.  Mengetahui Omset penjualan masing2 Merk Kopi beserta Trend penjualan hariannya
+2.  Eksplorasi hubungan antara variable seller dengan omset penjualan
+3.  Melihat Top Seller dari masing2 Merk dan eksplorasi variable top seller tersebut
+
+## Cara Pemilihan Produk
+
+Ada 7 Brand Kopi Sachet yang diambil dalam scraping ini:
+
+i) Kopi Luwak White Koffie
+ii) Torabika
+iii) Kapal Api **(hanya Tokopedia saja)**
+iv)  Goodday
+v) Lokalate
+vi) Caffino
+vii) Top Coffee
+
+## Metode
+
+### Pemilihan Produk yang Discrape
+
+Produk discrape dipilih dengan melakukan pencarian dengan keyword dasar masing2 merk untuk meminimalisir typo dan kesalahan penulisan lainnya
+
+Untuk **Tokopedia**, produk disort berdasarkan **ulasan terbanyak**. Sedangkan **Shopee** disort berdasarkan **Produk Terlaris**. Semua Produk yang terlisting diambil dari Halaman Pertama hingga Halaman dimana produk sudah **tidak memiliki rating atau pembeli**
+
+### Data yang diambil
+
+Data yang berhasil discrape adalah sebagai berikut:
+
+1.  Nama Produk
+2.  Nama Seller
+3.  Harga
+4.  Jumlah Barang Terjual
+5.  Jumaah Barang Dilihat
+6.  (Untuk Toko Top Seller) Lokasi Toko
+7.  (Untuk Toko Top Seller) Apakah Toko tersebut menjual Barang secara Grosir
+8.  (Untuk Toko Top Seller) Jenis Toko
+
+### Periode Pengambilan Data
+
+Data secara rutin diambil pada tanggal 7 September hingga 7 Oktober 2020
+
+# Preprocessing
+
+Untuk dapat masuk ke tahap analisa, data hasil scrape dilakukan 'pembersihan' untuk dapat dilakukan pengolahan
+
+## Perubahan Angka `Jumlah Barang Terjual`
+
+Selama periode pengambilan, `Jumlah Barang Terjual` berubah apabila adanya transaksi pembelian di listing tersebut. Namun, ada beberapa produk dimana Angka `Jumlah Barang Terjual` ini malah berkurang dari Hari Sebelumnya. Fenomena ini belum diketahui penyebabnya dan harus dikonfirmasi ke pihak **Shopee** / **Tokopedia**.
+
+Agar tidak terjadi Omset Negatif, dalam perhitungannya, apabila Angka `Jumlah Barang Terjual` lebih rendah dari hari sebelumnya, maka di Hari turunnya tersebut, `Jumlah Barang Terjual` akan dikembalikan/disamakan dengan Angka di Hari sebelumnya.
+
+## Perubahan Harga Produk dan Perhitungan Omset
+
+Selama periode pengambilan, harga dari suatu produk bisa naik atau turun.
+
+Perhitungan Omset Harian dilakukan dengan mengalikan harga pada hari ini dengan selisih `Jumlah Barang Terjual` hari ini dan hari sebelumnya.
+
+## Pengisian Data untuk Produk yang gagal diambil
+
+Saat scraping, terjadi kegagalan pengambilan di beberapa produk. Agar data dapat diolah, Data yang gagal diambil pada hari tersebut akan disamakan dengan Data pada hari sebelumnya.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(ggplot2)
+library(DT)
+library(gridExtra)
+library(cowplot)
+library(scales)
+library(readxl)
+library(openxlsx)
+library(ggthemes)
+library(wordcloud)
+library(gt)
+
+load("cleaned data.rda")
+`%notin%` <- Negate(`%in%`)
+
+cleaned <-
+  cleaned %>% 
+  filter(Merk %notin% c("NA", "Mixed")) %>% 
+  mutate(Omset = Sales*harga)
+
+colours <- c("Tokopedia" = "#60bb55",
+             "Shopee" = "#fc641b")
+```
+
+# Catatan
+
+## Catatan 1
+
+Ada error pengambilan data untuk merk **Kapal Api** di **Shopee,** dimana sebagian besar data tidak berhasil diambil (hanya 50 dari kurang lebih 1000 listed produk).
+
+Harap dijadikan catatan bahwa Data Kapal Api di Shopee tidak dapat dijadikan acuan sehingga semua data Kapal Api yang ditampilkan dibawah diasumsikan tanpa Shopee
+
+## Catatan 2
+
+Pada tanggal 8 dan 17 September 2020, terdapat Anomali Sales pada Beberapa Merk dimana Sales dalam 1 hari meningkat Tajam. Fenomena ini tidak diketahui alasannya.
+
+Berikut adalah list Produk Anomali tersebut, dapat dilihat dalam sehari Salesnya mencapai 16rb hingga 65rb item
+
+Merk-merk yang menjadi Perhatian - Kapal Api - Lokalate - Goodday
+
+```{r}
+item_anomali <-
+cleaned %>% 
+  arrange(desc(Sales)) %>% 
+  select(Marketplace, Merk, seller, nama, waktu.scrape, harga, Sales) %>% 
+  head(60) %>% 
+  rename("QTY Sales per Hari" = Sales)
+
+DT::datatable(item_anomali)
+```
+
+> Untuk menghindari ketimpangan data, outlier / data sales harian diatas 1630 tidak akan dipakai
+
+```{r}
+#HANYA UNTUK MENGURUTKAN MERK BERDASARKAN OMSET
+urutan_omset <-
+  cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  group_by(Merk, sku) %>% 
+  summarise("Omset_Total" = sum(Omset)/1000000) %>% 
+  ungroup() %>% 
+  group_by(Merk) %>% 
+  mutate(Omset_All = sum(Omset_Total)) %>% 
+  slice(1) %>% 
+  arrange(Omset_All)
+
+cleaned$Merk <- factor(cleaned$Merk, levels = urutan_omset$Merk)
+
+Omset_Kopi_Sachet <-
+cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  filter(Merk != "Nutrisari") %>% 
+  group_by(Merk) %>% 
+  summarise("Omset_Total" = signif(sum(Omset)/1000000,3)) %>% 
+  ungroup() %>% 
+  summarise(Omset = sum(Omset_Total)/1000)
+
+Omset_Kapal_Api <-
+cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  filter(Merk == "Kapal Api") %>% 
+  group_by(Merk) %>% 
+  summarise("Omset_Total" = signif(sum(Omset)/1000000,3)) %>% 
+  ungroup() %>% 
+  summarise(Omset = sum(Omset_Total)/1000)
+```
+
+# Basis Data {#basis-data}
+
+## Basis Omset Per Brand {#basis-omset-per-brand}
+
+Sebelum kita masuk ke tahap analisis, kita akan melihat terlebih dahulu Basis Data yang akan kita gunakan.
+
+Sejak tanggal 7 September hingga 7 Oktober 2020, **Total Omset dari Kopi Sachet** di kedua Marketplace (**tanpa Kapal Api di Shopee**) adalah sebesar **Rp `r Omset_Kopi_Sachet$Omset` Miliar**. Yang jika kita lihat berdasarkan Merknya adalah sebagai berikut, (NS dipakai hanya sebagai acuan)
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  group_by(Merk) %>% 
+  summarise("Omset_Total" = signif(sum(Omset)/1000000,3)) %>% 
+  ggplot(aes(x = reorder(Merk, Omset_Total), y = Omset_Total, fill = Merk)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  geom_text(aes(label = Omset_Total), position = position_dodge(width = 1), hjust = -0.25) +
+  ylim(0, 1100) +
+  theme_clean() +
+  labs(
+    title = "Total Omset Periode 7 September - 7 Oktober 2020",
+    subtitle = "Omset dalam Juta Rupiah",
+    x = "Merk",
+    y = "Omset"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16))
+```
+
+Merk **Kapal Api** sebagai *Market Leader* dari Kopi Sachet memiliki Omset hampir **3x Merk lainnya (belum termasuk Omset Shopee)**
+
+Masuk ke pertanyaan pertama, *Apakah Omset Total ini ada Korelasi dengan Jumlah Penjual atau Item Listednya?*
+
+## Jumlah Seller per Brand {#jumlah-seller-per-brand}
+
+Pertama, dari jumlah sellernya, terdapat sekitar 700-800an seller untuk Top 3 *Market Leader.*
+
+Lokalate memiliki 106 seller yang tersebar di Tokopedia dan Shopee (termasuk Nutrimart). Sebagai acuan, Nutrisari memiliki 515 seller.
+
+```{r}
+Jumlah_Listed_Seller_Merk <-
+cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Omset_Total" = signif(sum(Omset)/1000000,3)) %>% 
+  group_by(Marketplace, Merk, seller, nama) %>% 
+  slice(1) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Jumlah_Listed" = n()) %>% 
+  group_by(Marketplace, Merk, seller) %>% 
+  slice(1) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Jumlah_Seller" = n()) %>% 
+  slice(1) %>% 
+  select(Marketplace, Merk, Omset_Total, Jumlah_Listed, Jumlah_Seller) %>% 
+  arrange(-Omset_Total)
+
+Jumlah_Listed_Seller_Merk %>% 
+  group_by(Merk) %>% 
+  summarise(Omset_Total = sum(Omset_Total), Jumlah_Listed = sum(Jumlah_Listed), Jumlah_Seller = sum(Jumlah_Seller)) %>% 
+  ggplot(aes(x = Jumlah_Seller, y = Merk, fill = Merk)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Jumlah_Seller), position = position_dodge(width = 1), hjust = -0.25) +
+  xlim(0, 900) +
+  theme_clean() +
+  labs(
+    title = "Jumlah Seller masing2 Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "Jumlah Seller",
+    y = "Merk",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16))
+```
+
+## Jumlah Listed per Brand
+
+Sedangkan dari Listed Produk, , (NS dipakai hanya sebagai acuan)
+
+```{r}
+Jumlah_Listed_Seller_Merk %>% 
+  group_by(Merk) %>% 
+  summarise(Omset_Total = sum(Omset_Total), Jumlah_Listed = sum(Jumlah_Listed), Jumlah_Seller = sum(Jumlah_Seller)) %>% 
+  ggplot(aes(x = Jumlah_Listed, y = Merk, fill = Merk)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Jumlah_Listed), position = position_dodge(width = 1), hjust = -0.25) +
+  xlim(0, 1550) +
+  theme_clean() +
+  labs(
+    title = "Jumlah Listed Produk masing2 Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "Jumlah Listed",
+    y = "Merk",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16))
+```
+
+Terdapat **146 Listed Produk Lokalate**, sehingga apabila dihitung, **rata2 Listed / Seller** sebesar **1.37** dengan **Median 1,** artinya setengah seller hanya menjual 1 jenis produk lokalate.
+
+Untuk melihat lebih jelas bagaimana Korelasi dari Omset dengan Jumlah Seller dan Listed Produk, kita dapat menghitungnya dengan Metode *Spearman* (n\<30). Hasil dari perhitungannya dapat kita sajikan dalam *Correlation Matrix* sebagai berikut:
+
+```{r}
+Korelasi_Merk <-
+  Jumlah_Listed_Seller_Merk %>% 
+  group_by(Merk) %>% 
+  summarise(Omset_Total = sum(Omset_Total), Jumlah_Listed = sum(Jumlah_Listed), Jumlah_Seller = sum(Jumlah_Seller))
+```
+
+```{r}
+GGally::ggcorr(method = "pairwise", Korelasi_Merk, high = "#003366", low = "#F21A00",
+               label = TRUE, label_color = "white", label_size = 8, label_round = 2)
+```
+
+Variabel `Jumlah_Seller` dan `Jumlah_Listed` memiliki **korelasi positif** dan **cukup** **kuat** terhadap `Omset_Total`
+
+Namun, basis data yang digunakan adalah gabungan dari dua marketplace, Tokopedia dan Shopee. Selanjutnya kita akan melihat *Apakah salah satu Marketplace "menjual" Kopi Sachet lebih baik dari Marketplace lainnya?*
+
+# Analisa Marketplace
+
+Dari **Total Omset Kopi Sachet** **tanpa Kapal Api** sebesar **Rp `r Omset_Kopi_Sachet$Omset - Omset_Kapal_Api$Omset`** **Miliar,** proporsi tiap Marketplace dari Omset tersebut, adalah sebagai berikut
+
+```{r}
+cleaned$Marketplace <- factor(cleaned$Marketplace, levels = c("Shopee","Tokopedia"))
+
+cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  filter(Merk %notin% c("Nutrisari","Kapal Api")) %>% 
+  group_by(Marketplace) %>% 
+  summarise("Omset_Total" = signif(sum(Omset)/1000000,3)) %>% 
+  mutate("Proporsi" = signif(Omset_Total / sum(Omset_Total),3)*100) %>% 
+  ggplot(aes(x = Proporsi, y = "", fill = Marketplace, label = Proporsi, order = -Marketplace)) + 
+  scale_fill_manual(values = colours) +
+  geom_col(position = position_stack(reverse = TRUE)) +
+  geom_text(size = 8, position = position_stack(vjust = 0.5, reverse = TRUE)) +
+  theme_clean() +
+  labs(
+    title = "Proporsi Marketplace pada Omset Total",
+    x = "Proporsi",
+    y = ""
+  ) +
+  theme(legend.position = "bottom")
+```
+
+Tokopedia ternyata memiliki **hampir 2x lipat** omset shopee **(diluar Kapal Api)**
+
+Kemudian untuk lebih detailnya, dari tabel dibawah, dapat kita lihat bahwa **Tokopedia** memang memiliki jumlah seller dan jumlah listed produk Kopi Sachet yang **lebih banyak** dari **Shopee.**
+
+```{r}
+crosstab_omset_marketplace <- 
+Jumlah_Listed_Seller_Merk %>% 
+  filter(Merk %notin% c("Nutrisari","Kapal Api")) %>% 
+  group_by(Marketplace) %>% 
+  summarise(Omset_Total = sum(Omset_Total), Jumlah_Listed = sum(Jumlah_Listed), Jumlah_Seller = sum(Jumlah_Seller)) %>% 
+  ungroup()
+
+DT::datatable(crosstab_omset_marketplace)
+```
+
+Namun, apabila kita melihat rata2 dan median dari **Omset/Seller** dan **Omset/Listednya**
+
+```{r}
+omset_per_listed_seller <-
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api")) %>% 
+  group_by(Marketplace, seller, nama) %>% 
+  mutate("Omset per Listed Produk" = sum(Omset)) %>% 
+  group_by(Marketplace) %>% 
+  mutate("Rata2 Omset per Listed Produk" = signif(mean(`Omset per Listed Produk`),3),
+            "Median Omset per Listed Produk" = median(`Omset per Listed Produk`)) %>% 
+  group_by(Marketplace, Merk, seller) %>% 
+  mutate("Omset per Seller" = sum(Omset)) %>%
+  slice(1) %>% 
+  group_by(Marketplace) %>% 
+  mutate("Rata2 Omset per Seller" = signif(mean(`Omset per Seller`),3),
+            "Median Omset per Seller" = median(`Omset per Seller`)) %>% 
+  slice(1) %>% 
+  select(Marketplace, `Rata2 Omset per Listed Produk`, `Median Omset per Listed Produk`, `Rata2 Omset per Seller`, `Median Omset per Seller`)
+
+DT::datatable(omset_per_listed_seller)
+```
+
+**Tokopedia** memang memiliki **Rata2** **Omset per Seller** dan **Omset per Listed** yang lebih besar dari **Shopee.**
+
+Namun, apabila kita melihat dari **Mediannya,** yang terjadi adalah kebalikannya, dimana **Tokopedia lebih rendah** dari **Shopee.**
+
+> Hal ini mengindikasikan, walaupun Tokopedia memiliki lebih banyak seller dari Shopee, sebagian besar Omsetnya hanya berasal beberapa toko saja, bahkan setengah dari seller di Tokopedia tidak mendapatkan omset sama sekali.
+
+*Apakah fenomena dimana Omset/Seller dan Omset/Listed Kopi Sachet lebih besar di Tokopedia daripada Shopee terjadi di semua Brand? atau ada hanya Brand2 tertentu saja?*
+
+# Analisa Brand Kopi Sachet
+
+Pertama, dari Omset Total Brand yang dapat dilihat [sebelumnya](#basis-omset-per-brand), kita akan lihat proporsinya serta Jumlah Seller dan Listed Produk tiap2 Brand di masing2 Marketplace
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630) %>% 
+  filter(Merk %notin% c("Nutrisari","Kapal Api")) %>% 
+  group_by(Marketplace, Merk) %>% 
+  summarise("Omset_Total" = signif(sum(Omset)/1000000,3)) %>% 
+  group_by(Merk) %>% 
+  mutate("Proporsi_Omset" = signif(Omset_Total / sum(Omset_Total) * 100,3)) %>% 
+  ggplot(aes(x = Merk, y = Proporsi_Omset, fill = Marketplace, label = Proporsi_Omset)) +
+  scale_fill_manual(values = colours) +
+  geom_col(position = position_stack(reverse = TRUE)) +
+  geom_text(size = 4, position = position_stack(vjust = 0.5, reverse = TRUE)) +
+  coord_flip() + 
+  theme_clean() +
+  labs(
+    title = "Proporsi Marketplace pada Omset masing-masing Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "Merk",
+    y = ""
+  ) +
+  theme(legend.position = "bottom")
+```
+
+> **Hampir semua brand** memiliki **Omset yang lebih besar** (atau setidaknya hampir sama) **di Tokopedia**. **Hanya Lokalate** saja yang **Omset Tokopedian**ya hanya **36.9%** dari Omset Total
+
+```{r}
+Jumlah_Listed_Seller_Merk %>% 
+  ggplot(aes(x = Jumlah_Seller, y = Merk, fill = Merk)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~Marketplace) +
+  geom_text(aes(label = Jumlah_Seller), position = position_dodge(width = 1), hjust = -0.25) +
+  xlim(0, 900) +
+  theme_clean() +
+  labs(
+    title = "Jumlah Seller masing2 Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "Merk",
+    y = "Jumlah Seller"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16))
+```
+
+```{r}
+Jumlah_Listed_Seller_Merk %>% 
+  ggplot(aes(x = Jumlah_Listed, y = Merk, fill = Merk)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~Marketplace) +
+  geom_text(aes(label = Jumlah_Listed), position = position_dodge(width = 1), hjust = -0.25) +
+  xlim(0, 1550) +
+  theme_clean() +
+  labs(
+    title = "Jumlah Listed Produk masing2 Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "Merk",
+    y = "Jumlah Seller"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16))
+```
+
+Sama seperti sebelumnya, kita akan melihat rata2 dan median **Omset per Seller** dan **Listed** dari masing2 Brand, (NS dipakai hanya sebagai acuan)
+
+## Omset per Listed masing-masing Brand
+
+Pertama, kita akan melihat *berapa omset rata2 listed produk dari tiap brand dan apakah semua listed produk memiliki omset yang sama*
+
+```{r}
+omset_brand <-
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari")) %>% 
+  group_by(Marketplace, Merk, seller, nama) %>% 
+  mutate("Omset per Listed Produk" = sum(Omset)) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Rata2 Omset per Listed Produk" = signif(mean(`Omset per Listed Produk`),3),
+            "Median Omset per Listed Produk" = median(`Omset per Listed Produk`)) %>% 
+  group_by(Marketplace, Merk, seller) %>% 
+  mutate("Omset per Seller" = sum(Omset)) %>%
+  slice(1) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Rata2 Omset per Seller" = signif(mean(`Omset per Seller`),3),
+            "Median Omset per Seller" = median(`Omset per Seller`)) %>% 
+  slice(1) %>% 
+  select(Marketplace, `Rata2 Omset per Listed Produk`, `Median Omset per Listed Produk`, `Rata2 Omset per Seller`, `Median Omset per Seller`)
+```
+
+```{r}
+omset_brand %>% 
+  ggplot(aes(x = `Rata2 Omset per Listed Produk`, y = Merk, fill = Merk)) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = `Rata2 Omset per Listed Produk`), hjust = -0.2) +
+  facet_grid(~Marketplace) +
+  theme_clean() +
+  labs(
+    title = "Rata2 Omset per Listed Produk",
+    subtitle = "Diurutkan dari Omset Terbesar",
+    x = "Omset (Rp)",
+    y = "",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  xlim(0,1000000)
+```
+
+**Lokalate** memiliki **rata2 Omset per Listed Produk terbesar ke 3 di Shopee** dan lebih besar dari Caffino di kedua marketplace
+
+```{r}
+omset_brand %>% 
+  ggplot(aes(x = `Median Omset per Listed Produk`, y = Merk, fill = Merk)) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = `Median Omset per Listed Produk`), hjust = -0.2) +
+  facet_grid(~Marketplace) +
+  theme_clean() +
+  labs(
+    title = "Median Omset per Listed Produk",
+    subtitle = "Diurutkan dari Omset Terbesar",
+    x = "Omset (Rp)",
+    y = "",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  xlim(0,40000)
+```
+
+Namun, dengan rata2 omset yang signifikan lebih besar dari median, menandakan omset hanya berasal dari beberapa listed produk saja.
+
+> Grafik Median Omset menandakan setidaknya 50% produk **Lokalate** memiliki omset bulanan sebesar Rp 3.000 di Shopee dan Rp 22.500 di Tokopedia
+
+Selain, Caffino dan Lokalate, semua Brand Kopi Sachet memiliki **median** yang lebih besar di Shopee daripada Tokopedia.
+
+*Sekarang Kalau kita lihat dari segi Sellernya*
+
+## Omset per Seller masing-masing Brand
+
+```{r}
+omset_brand %>% 
+  ggplot(aes(x = `Rata2 Omset per Seller`, y = Merk, fill = Merk)) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = `Rata2 Omset per Seller`), hjust = -0.2) +
+  facet_grid(~Marketplace) +
+  theme_clean() +
+  labs(
+    title = "Rata2 Omset per Seller",
+    subtitle = "Diurutkan dari Omset Terbesar",
+    x = "Omset (Rp)",
+    y = "",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  xlim(0,1800000)
+```
+
+```{r}
+omset_brand %>% 
+  ggplot(aes(x = `Median Omset per Seller`, y = Merk, fill = Merk)) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = `Median Omset per Seller`), hjust = -0.2) +
+  facet_grid(~Marketplace) +
+  theme_clean() +
+  labs(
+    title = "Median Omset per Seller",
+    subtitle = "Diurutkan dari Omset Terbesar",
+    x = "Omset (Rp)",
+    y = "",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  xlim(0,40000)
+```
+
+Median 0 menandakan setengah dari Seller tidak memiliki omset sama sekali dalam 1 bulan terakhir.
+
+Sama seperti fenomena sebelumnya, dimana kita dapat melihat **Lokalate** memiliki **Rata2** **Omset per Seller** yang **lebih besar dari Caffino**. Namun, mediannya cenderung sama / lebih rendah (di Shopee).
+
+> Hal ini mengindikasikan, sebagian besar Omset Lokalate hanya berasal beberapa toko saja
+
+Kita selanjutnya akan melihat *Toko / Seller mana saja yang menjual produk dengan "baik"?*
+
+# Analisa Seller
+
+Kita akan menggunakan asumsi bahwa toko / seller yang menjual produk dengan "baik" adalah toko / seller yang memiliki omset \> rata-rata omset brandnya di masing2 marketplace.
+
+Berikut adalah **List Toko2 dengan Omset diatas rata-rata Omset per Seller** masing masing Brand tersebut
+
+```{r}
+wordcloud_seller <- 
+  cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari")) %>%
+  group_by(Marketplace, Merk, seller) %>% 
+  summarise("Omset per Seller" = sum(Omset)) %>% 
+  group_by(Marketplace, Merk)
+
+wordcloud_seller <- left_join(wordcloud_seller, omset_brand, by = c("Marketplace", "Merk"))
+
+wordcloud_seller <-
+  wordcloud_seller %>% 
+  mutate(status = case_when(
+    `Omset per Seller` > `Rata2 Omset per Seller` ~ "Lebih Tinggi",
+    TRUE ~ "Tidak"
+  )) %>% 
+  filter(status == "Lebih Tinggi") %>% 
+  group_by(Marketplace, Merk) %>% 
+  arrange(-`Omset per Seller`, .by_group = TRUE)
+
+DT::datatable(wordcloud_seller[1:4])
+```
+
+Serta dalam bentuk Grafis berupa *Wordcloud* dengan ukuran hurufnya sebanding dengan proporsi omset toko di brand tersebut
+
+```{r}
+library(ggwordcloud)
+for (merk in c("Kapal Api", "Good Day", "Luwak White Coffee", "Torabika", "Top Coffee", "Caffino", "Lokalate")) {
+  print(
+    wordcloud_seller %>%
+  filter(Merk == merk) %>% 
+  arrange(-`Omset per Seller`) %>% 
+  ggplot(aes(label = seller, size = `Omset per Seller`, color = `Omset per Seller`)) +
+  geom_text_wordcloud_area(shape = "circle", rm_outside = TRUE, eccentricity = 1) +
+  scale_size_area(max_size = 16) +
+  theme_minimal() +
+  ggtitle(merk)
+  )
+
+}
+```
+
+Diantara toko / seller tersebut, terlihat ada Official Store masing2 brand seperti Nutrimart, WingsOfficial, Mayora dll
+
+Terdapat pula beberapa seller yang menjual lebih dari satu brand, seperti
+
+1.  3F Retail ([**Tokopedia**](https://www.tokopedia.com/3fretail)/ [**Shopee**](https://shopee.co.id/3fretail888)) yang merupakan Toko kelontong yang menjual makanan bermerek hingga keperluan rumah tangga
+
+2.  Gerai Cipta Dagang ([**Tokopedia**](https://www.tokopedia.com/geraicemal)/ [**Shopee**](https://shopee.co.id/geraicemalcemil)) yang juga toko kelontong namun lebih fokus ke makanan dan sembako
+
+3.  Warung Pintar Official ([**Tokopedia**](https://www.tokopedia.com/warungpintarco)/ [**Shopee**](https://shopee.co.id/warungpintarindonesia)) yang merupakan "supermarket" official yang dimiliki oleh startup [**Warung Pintar**](https://warungpintar.co.id/)
+
+Berikut adalah list lengkap toko / seller beserta jumlah brand yang dijual di toko tersebut, diurutkan dari Omset\_Total Toko (dalam Juta Rupiah) tertinggi
+
+Catatan:
+
+1.  Omset per Brand = Omset tiap Brand di Toko / Seller tersebut
+2.  Omset Toko (All Brand) = Penjumlahan Omset seluruh Brand di Toko / Seller tersebut
+3.  Jumlah Brand per Seller = Jumlah Brand yang dijual di Toko / Seller tersebut
+
+```{r}
+seller_muncul <-
+  wordcloud_seller %>% 
+  group_by(Marketplace, seller, Merk) %>% 
+  summarise(Omset_Total = signif(sum(`Omset per Seller`)/1000000,3)) %>% 
+  group_by(Marketplace, seller) %>% 
+  mutate(Omset_Toko = sum(Omset_Total), Jumlah_Brand = n()) %>% 
+  arrange(-Omset_Toko, -Omset_Total) %>% 
+  rename("Brand" = Merk, "Omset per Brand" = Omset_Total, "Omset Toko (All Brand)" = Omset_Toko, "Jumlah Brand per Seller" = Jumlah_Brand)
+
+DT::datatable(seller_muncul)
+```
+
+Melihat beberapa reseller yang memiliki omset lebih besar dari Official Store Brandnya, berikut adalah listnya
+
+```{r}
+reseller_oke <-
+wordcloud_seller %>% 
+  mutate(status_omset = case_when(
+    Marketplace == "Shopee" & Merk == "Good Day" & `Omset per Seller` >= 4352740 ~ "Oke",
+    Marketplace == "Tokopedia" & Merk == "Top Coffee" & `Omset per Seller` >= 1601400 ~ "Oke",
+    Marketplace == "Tokopedia" & Merk == "Good Day" & `Omset per Seller` >= 13057910 ~ "Oke",
+    Marketplace == "Tokopedia" & Merk == "Kapal Api" & `Omset per Seller` >= 18265004 ~ "Oke",
+    TRUE ~ "Tidak"
+  )) %>% 
+  filter(status_omset == "Oke")
+
+DT::datatable(reseller_oke[1:4])
+```
+
+*Kita akan coba bandingan dan lihat proporsi OS dan Reseller dari Omset Totalnya*
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari")) %>% 
+  group_by(Marketplace, Merk, Toko) %>% 
+  summarise("Omset_Total" = sum(Omset)) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Proporsi" = signif(Omset_Total / sum(Omset_Total)*100,3)) %>% 
+  ggplot(aes(x = Proporsi, y = Merk, fill = Toko, label = Proporsi)) +
+  geom_bar(stat = "identity") +
+  geom_text(size = 4, position = position_stack(vjust = 0.5)) +
+  facet_grid(~Marketplace) +
+  theme_clean() +
+  labs(
+    title = "Proporsi Jenis Toko dari Omset Total pada Tiap Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "Proporsi",
+    y = "Merk",
+    caption = "*Data Kapal Api Shopee tidak dapat dijadikan acuan"
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 16))
+```
+
+Ternyata, **Hanya Lokalate** saja yang **Omsetnya Mayoritas didapatkan dari Official Store Brandnya**. Untuk Brand Lain, **minimal 50% Omset didapat dari Reseller**.
+
+> Terlihat pola semakin besar omsetnya, semakin besar pula proporsi resellernya
+
+Setelah membahas dari Sisi Marketplace dan Brand Kopi secara keseluruhan, kita akan melihat lebih lanjut dari sisi jenis kopinya,
+
+*Bagaimana omset dilihat dari Jenis Kopinya? Apa rasa yang paling laku?*
+
+# Analisa Jenis Kopi
+
+Dalam analisa ini, Jenis kopi akan dibagi menjadi 4 Jenis:
+
+1.  Kopi Hitam
+
+2.  2 in 1 (Hitam + Gula)
+
+3.  3 in 1 (Hitam + Gula + Krimer) atau Kopi dengan Rasa (Aren, Mocca, Latte dll)
+
+4.  Lainnya
+
+Pertama, kita akan melihat total Omset masing2 Jenis Kopi di tiap marketplace
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api")) %>% 
+  group_by(Marketplace, jenis_kopi) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>% 
+  ggplot(aes(x = jenis_kopi, y = Omset_Total, fill = Marketplace)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~Marketplace) +
+  scale_fill_manual(values = colours) +
+  geom_text(aes(label = Omset_Total), vjust = -0.5) +
+  theme_clean() +
+  labs(
+    title = "Total Omset berdasarkan Jenis Kopi",
+    x = "Jenis Kopi",
+    y = "Omset (dalam Juta Rupiah)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  ylim(0, 650)
+```
+
+Tanpa termasuk Omset Kapal Api, **Kopi 3 in 1** memiliki **Omset Total** sebesar **Rp 865 Juta**
+
+Dari seluruh Omset tersebut, *Berapa market share tiap Brand? Bagaimana proporsi SKUnya? Apa saja rasa yang paling laku?*
+
+## Analisa Kopi 3 in 1
+
+Pertama, kita akan melihat omset di masing-masing Marketplace, dimana Total Omset Tokopedia melebihi Shopee
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api"), jenis_kopi == "3 in 1", harga < 50000, sku %notin% c("Lainnya","40 Sachet")) %>%
+  group_by(Marketplace, Merk) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>% 
+  ggplot(aes(y = Merk, x = Omset_Total, fill = Marketplace)) +
+  geom_bar(stat = 'identity') +
+  facet_grid(~Marketplace) +
+  scale_fill_manual(values = colours) +
+  geom_text(aes(label = Omset_Total), hjust = -0.5) +
+  theme_clean() +
+  labs(
+    title = "Omset Kopi 3 in 1",
+    x = "Omset (dalam Juta Rupiah)",
+    y = "Merk"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  xlim(0, 350)
+```
+
+Pada analisis kali ini, SKU dibagi menjadi 5 jenis
+
+1.  Satuan
+
+2.  5 Sachet
+
+3.  10 Sachet
+
+4.  40 Sachet
+
+5.  Lainnya -\> Bentuk lainnya bisa bermacam2, antara lain *pouch refill, 3/*15/20 Sachet dll
+
+Berikut adalah grafik proporsi SKU pada Omset 3 in 1 pada masing-masing Brand
+
+```{r}
+omset_3in1 <-
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api"), jenis_kopi == "3 in 1") %>% 
+  group_by(Marketplace, Merk, seller, nama) %>% 
+  mutate("Omset per Listed Produk" = sum(Omset)) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Rata2 Omset per Listed Produk" = signif(mean(`Omset per Listed Produk`),3),
+            "Median Omset per Listed Produk" = median(`Omset per Listed Produk`)) %>% 
+  group_by(Marketplace, Merk, seller) %>% 
+  mutate("Omset per Seller" = sum(Omset)) %>%
+  slice(1) %>% 
+  group_by(Marketplace, Merk) %>% 
+  mutate("Rata2 Omset per Seller" = signif(mean(`Omset per Seller`),3),
+            "Median Omset per Seller" = median(`Omset per Seller`)) %>% 
+  slice(1) %>% 
+  select(Marketplace, `Rata2 Omset per Listed Produk`, `Median Omset per Listed Produk`, `Rata2 Omset per Seller`, `Median Omset per Seller`)
+```
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari"), jenis_kopi == "3 in 1") %>% 
+  group_by(Merk, sku) %>% 
+  summarise("Omset_Total" = sum(Omset)/1000000) %>% 
+  ungroup() %>% 
+  group_by(Merk) %>% 
+  mutate(Omset_All = sum(Omset_Total)) %>% 
+  ungroup() %>% 
+  arrange(-Omset_All) %>%
+  group_by(Merk) %>%
+  mutate("Proporsi" = signif(Omset_Total / sum(Omset_Total),3)*100) %>% 
+  ggplot(aes(x = reorder(Merk, Omset_All), y = Proporsi, fill = sku)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + 
+  theme_clean() +
+  labs(
+    title = "Proporsi SKU pada Omset 3 in 1 pada masing-masing Brand",
+    subtitle = "Brand diurutkan dari Omset Total tertinggi",
+    x = "Merk",
+    y = ""
+  ) 
+```
+
+> Mayoritas Omset dari Semua Brand (kecuali Top Coffee) diperoleh dari penjualan ukuran 10 Sachet. Caffino mempunyai proporsi SKU yang hampir mirip dengan Lokalate.
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari"), jenis_kopi == "3 in 1", sku %notin% c("Lainnya","40 Sachet"), harga < 30000) %>% 
+  ggplot(aes(x = Merk, y = harga)) +
+  geom_boxplot(aes(color = Merk)) +
+  coord_flip() +
+  facet_grid(~sku, scales = "free_x") +
+  theme_clean() +
+  labs(
+    title = "Perbandingan Sebaran Harga masing2 SKU antar Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "",
+    y = "Harga"
+  ) +
+  theme(legend.position = "none")
+```
+
+Untuk SKU 10 Sachet, Lokalate adalah merk dengan median harga yang paling tinggi hampir mencapai Rp 15rb per renceng, sementara merk2 lainnya hanya berkisar Rp 10 rb per renceng.
+
+Lalu *bagaimana dengan rasa dari 3 in 1 ?*
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api"), jenis_kopi == "3 in 1") %>% 
+  group_by(Marketplace, Merk, rasa_kopi) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>% 
+  group_by(rasa_kopi) %>% 
+  summarise(Omset_Total = sum(Omset_Total)) %>% 
+  arrange(-Omset_Total) %>% 
+  ggplot(aes(x = Omset_Total, y = reorder(rasa_kopi, Omset_Total), fill = rasa_kopi)) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = Omset_Total), hjust = -0.25) +
+  theme_clean() +
+  labs(
+    title = "Omset Kopi 3 in 1",
+    x = "Omset (dalam Juta Rupiah)",
+    y = "Merk"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 16)) +
+  xlim(0, 350)
+```
+
+> Top 5 Rasa 3 in 1 adalah **Rasa White Coffee, Latte / Kopi Susu, Mochaccino, Cappucino, dan Gula Aren**
+
+*Siapa saja yang menjual Gula Aren? Bagaimana Omsetnya?*
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api"), jenis_kopi == "3 in 1", rasa_kopi == "Gula Aren") %>% 
+  group_by(Merk) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>% 
+  ggplot(aes(x = Omset_Total, y = reorder(Merk, Omset_Total), fill = Merk)) +
+  geom_text(aes(label = Omset_Total), hjust = -0.25) +
+  geom_bar(stat = 'identity') +
+  theme_clean() +
+  labs(
+    title = "Market Share Gula Aren",
+    x = "Omset (dalam juta Rupiah)",
+    y = ""
+  ) +
+  theme(legend.position = "bottom") +
+  xlim(0, 47)
+```
+
+Ternyata ada 4 Brand, dengan Lokalate berada di peringkat 2 *market share gula aren* dengan omset sebesar Rp 29.6 Juta
+
+Apabila kita lihat Marketshare di Tiap2 Marketplace
+
+```{r, fig.height=5, fig.width=7}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api"), jenis_kopi == "3 in 1", rasa_kopi == "Gula Aren") %>% 
+  group_by(Marketplace, Merk) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>%
+  group_by(Marketplace) %>% 
+  mutate(Proporsi = signif(Omset_Total / sum(Omset_Total)*100,3)) %>% 
+  ggplot(aes(x = Proporsi, y = "", fill = Merk, label = Proporsi)) +
+  geom_bar(stat = 'identity') +
+  coord_flip() +
+  facet_grid(~Marketplace) +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) +
+  theme_clean() +
+  labs(
+    title = "Market Share Gula Aren di tiap2 Marketplace",
+    x = "Proporsi",
+    y = ""
+  ) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 16))
+```
+
+Torabika mempunyai *marketshare* sekitar 50% di tiap2 Marketplace, diikuti **Lokalate sebesar 35% di Shopee dan 43.9% di Tokopedia**
+
+*Bagaimana sebaran harga kopi gula aren?*
+
+```{r}
+cleaned %>% 
+  filter(Sales <= 1630, Merk %notin% c("Nutrisari","Kapal Api"), jenis_kopi == "3 in 1", rasa_kopi == "Gula Aren", harga < 50000, sku != "Lainnya") %>% 
+  ggplot(aes(x = Merk, y = harga)) +
+  geom_boxplot(aes(color = Merk)) +
+  coord_flip() +
+  facet_grid(~sku, scales = "free_x") +
+  theme_clean() +
+  labs(
+    title = "Perbandingan Sebaran Harga masing2 SKU antar Brand",
+    subtitle = "Data diurutkan dari Omset Total tertinggi",
+    x = "",
+    y = "Harga"
+  ) +
+  theme(legend.position = "none")
+```
+
+Ternyata hampir sama seperti sebelumnya, **Harga Lokalate untuk Ukuran 10 Sachet paling tinggi diantara Brand2 lainnya**
+
+# Analisis Lanjutan
+
+## Omset Retail
+
+Di Shopee, terdapat toko retail bernama "smart\_byshopee" yang merupakan Toko yang penjualannya dikelola oleh Shopee sendiri.
+
+Kita ingin melihat *Bagaimana omset toko retail tersebut dibandingkan dengan Official Store dan Reseller lainnya?*
+
+```{r}
+retail_vs_os <-
+cleaned %>% 
+  mutate(Jenis_Toko = case_when(
+    grepl("nutrimart|mayora|kopiluwak|Kopi Luwak Official|kapal|wings", seller, ignore.case = TRUE) ~ "Official Store",
+    grepl("smart_byshopee", seller, ignore.case = TRUE) ~ "Retail Shopee",
+    TRUE ~ "Reseller"
+  )) %>% 
+  filter(Marketplace == "Shopee",
+         Merk %notin% c("Nutrisari", "Kapal Api"),
+         Sales <= 1630) %>% 
+  group_by(Merk, Jenis_Toko) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>% 
+  pivot_wider(names_from = Merk, values_from = Omset_Total) %>% 
+  gt() %>%
+  tab_style(
+    style = cell_text(color = "black", weight = "bold"),
+    locations = list(
+      cells_column_labels(everything())
+    )
+  ) %>%  
+  tab_options(
+    row_group.border.top.width = px(3),
+    row_group.border.top.color = "black",
+    row_group.border.bottom.color = "black",
+    table_body.hlines.color = "white",
+    table.border.top.color = "white",
+    table.border.top.width = px(3),
+    table.border.bottom.color = "white",
+    table.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    column_labels.border.bottom.width = px(2),
+  ) %>%
+  tab_spanner(
+    label = "Omset dalam 1 Bulan di Shopee (dalam Juta Rupiah)",
+    columns = c(2:7)
+  ) %>% 
+  data_color(
+    columns = c(2:7), 
+    colors = scales::col_numeric(
+      palette = paletteer::paletteer_d(
+        palette = "ggsci::green_material"
+      ) %>% as.character(),
+      domain = NULL
+    )
+  )
+
+gtsave(retail_vs_os, filename = "Tabel Retail vs OS.png")
+```
+
+Terdapat 3 Brand Kopi Sachet yang dijual oleh "smart\_byshopee" yaitu Caffino, Luwak White Coffee, dan Goodday
+
+Hanya Good Day saja yang Omset Retailnya melebihi Official Store (Hampir 3x lipatnya) sebesar 12juta rupiah
+
+Sedangkan untuk brand lainnya, Omset Retailnya hanya sekitar 10% dari Omset Reseller
+
+## Omset Retail SKU
+
+Setelah dicek lebih lanjut, ternyata Toko2 Retail umumnya menjual ukuran SKU yang berbeda, umumnya ukuran2 besar seperti pouch, bag, 30 sachet, atau bundle2 lainnya
+
+Kita akan cek apakah ada perbedaan omset antar jenis toko bila dilihat dari SKUnya
+
+```{r}
+retail_vs_os_sku <- cleaned %>% 
+  mutate(Jenis_Toko = case_when(
+    grepl("nutrimart|mayora|kopiluwak|Kopi Luwak Official|kapal|wings", seller, ignore.case = TRUE) ~ "Official Store",
+    grepl("smart_byshopee", seller, ignore.case = TRUE) ~ "Retail Shopee",
+    TRUE ~ "Reseller"
+  )) %>% 
+  filter(Marketplace == "Shopee",
+         Merk %notin% c("Kapal Api"),
+         Sales <= 1630) %>% 
+  group_by(Merk, sku, Jenis_Toko) %>% 
+  summarise(Omset_Total = signif(sum(Omset)/1000000,3)) %>% 
+  pivot_wider(names_from = sku, values_from = Omset_Total)
+```
+
+```{r}
+retail_vs_os_sku <- retail_vs_os_sku[,c(1,2,3,7,4,5,6)]
+```
+
+```{r}
+tabel_retail_vs_os_sku <- retail_vs_os_sku %>% 
+  gt(rowname_col = "Jenis_Toko") %>%
+  data_color(
+    columns = c(3:7),
+    colors = scales::col_numeric(
+      palette = paletteer::paletteer_d(
+        palette = "ggsci::green_material"
+        ) %>% as.character(),
+      domain = NULL
+      )
+  ) %>% 
+  fmt_missing(
+    columns = everything(),
+    missing_text = "-"
+  ) %>%
+  fmt_number(
+    columns = c(3:7)
+  ) %>% 
+  tab_spanner(
+    label = "Omset dalam 1 Bulan di Shopee (dalam Juta Rupiah)",
+    columns = c(3:7)
+  ) %>% 
+  tab_options(
+    row_group.border.top.width = px(3),
+    row_group.border.top.color = "black",
+    row_group.border.bottom.color = "black",
+    table_body.hlines.color = "white",
+    table.border.top.color = "white",
+    table.border.top.width = px(3),
+    table.border.bottom.color = "white",
+    table.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    column_labels.border.bottom.width = px(2),
+    row_group.font.weight = "bold",
+    row_group.text_transform = "uppercase"
+  ) %>%
+  tab_style(
+    style = cell_text(color = "black", weight = "bold"),
+    locations = list(
+      cells_column_labels(everything())
+    )
+  )
+
+tabel_retail_vs_os_sku
+```
+
+Hal yang menarik adalah,
+
+Walaupun Omset SKU 10 Sachet di Reseller jauh melebihi Toko lainnya,
+
+Omset 5 Sachet dan Ukuran "Lainnya" di OS atau Retail cenderung lebih tinggi atau tidak berbeda jauh dengan Reseller
+
+```{r}
+cleaned_kopi <- cleaned
+
+save(cleaned_kopi, file  = "data_kopi.rda")
+```
+
